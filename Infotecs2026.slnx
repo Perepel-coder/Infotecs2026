@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Infotecs2026.Share/Infotecs2026.Share.csproj" />
+  <Project Path="Infotecs2026/Infotecs2026.csproj" />
+</Solution>
