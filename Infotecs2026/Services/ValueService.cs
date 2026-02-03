@@ -79,9 +79,9 @@ public class ValueService
                 curFile.GetRange(calcStatistic.RowCounter,
                 curFile.Count - calcStatistic.RowCounter));
 
-        await _valueRepository.SaveAsync();
-
         SetStatistic(fileName, calcStatistic, curFile.Count == 0);
+
+        await _valueRepository.SaveAsync();
 
         _logger.LogInformation(MsgPattern.Info, StatusCode.Ok, StatusCodeExtensions.GetMessage(StatusCode.Ok));
 
