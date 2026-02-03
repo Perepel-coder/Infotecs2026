@@ -11,11 +11,15 @@ public class ValueService
 {
     private readonly ILogger<ValueService> _logger;
     private readonly IValueRepository _valueRepository;
+    private readonly IResultRepository _resultRepository;
 
-    public ValueService(ILogger<ValueService> logger, IValueRepository valueRepository)
+    private const int CsvFileRowCount = 10000;
+
+    public ValueService(ILogger<ValueService> logger, IValueRepository valueRepository, IResultRepository resultRepository)
     {
         _logger = logger;
         _valueRepository = valueRepository;
+        _resultRepository = resultRepository;
     }
 
     public async Task<StatusCode> ParseCsvFileAsync(string fileName, Stream stream)
@@ -27,22 +31,21 @@ public class ValueService
             return StatusCode.InvalidFileFormat;
         }
 
-        List<Value> file = await _valueRepository.GetByNameAsync(fileName);
+        List<Value> curFile = await _valueRepository.GetByNameAsync(fileName);
 
         using var reader = new StreamReader(stream, Encoding.UTF8);
         using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
 
-        csv.Read();
+        csv.Context.TypeConverterOptionsCache.GetOptions<DateTime>().Formats = ["yyyy-MM-dd HH:mm:ss"];
+
+        await csv.ReadAsync();
         csv.ReadHeader();
 
-        int rowCounter = 0;
-        Result result = new Result();
-        while (csv.Read())
+        CalcStatistic calcStatistic = new(new());
+        while (await csv.ReadAsync())
         {
-            rowCounter++;
-
             // количество строк не может быть меньше 1 и больше 10 000
-            if (rowCounter > 10000)
+            if (calcStatistic.RowCounter > CsvFileRowCount)
             {
                 _logger.LogError(MsgPattern.Error, StatusCode.FileTooLarge,
                     StatusCodeExtensions.GetMessage(StatusCode.FileTooLarge, fileName));
@@ -57,52 +60,93 @@ public class ValueService
                 return StatusCode.InvalidFileFormat;
             }
 
-            // Сохраняем или обновляем запись в базе данных
-            if (file.Count == 0 || file.Count > rowCounter)
-            {
-                await _valueRepository.AddAsync(new()
-                {
-                    FileName = fileName,
-                    Date = date.Value,
-                    ExecutionTime = executionTime.Value,
-                    NumericValue = numericValue.Value
-                });
-            }
-            else
-            {
-                if (file.Count <= rowCounter)
-                {
-                    Value value = file[rowCounter - 1];
+            Value value = await SetToTable(fileName, date!.Value, executionTime!.Value, numericValue!.Value, 
+                calcStatistic.RowCounter, curFile,  curFile.Count == 0 || calcStatistic.RowCounter >= curFile.Count);
 
-                    value.Date = date.Value;
-                    value.ExecutionTime = executionTime.Value;
-                    value.NumericValue = numericValue.Value;
-
-                    _valueRepository.Update(value);
-                }
-                else
-                    _valueRepository.RemoveRange(file.GetRange(rowCounter, file.Count - rowCounter));
-            }
+            calcStatistic.Calc(value);
         }
 
-        if (rowCounter < 1)
+        if (calcStatistic.RowCounter < 1)
         {
             _logger.LogError(MsgPattern.Error, StatusCode.FileEmpty,
                 StatusCodeExtensions.GetMessage(StatusCode.FileEmpty, fileName));
             return StatusCode.FileEmpty;
         }
 
+        // Если размер нового файла меньше старого, удаляем лишние строки
+        if (calcStatistic.RowCounter < curFile.Count)
+            _valueRepository.RemoveRange(
+                curFile.GetRange(calcStatistic.RowCounter,
+                curFile.Count - calcStatistic.RowCounter));
+
         await _valueRepository.SaveAsync();
+
+        SetStatistic(fileName, calcStatistic, curFile.Count == 0);
 
         _logger.LogInformation(MsgPattern.Info, StatusCode.Ok, StatusCodeExtensions.GetMessage(StatusCode.Ok));
 
         return StatusCode.Ok;
     }
 
+    private async void SetStatistic(string fileName, CalcStatistic calcStatistic, bool needUpdateResult)
+    {
+        Result result = new()
+        {
+            FileName = fileName,
+            TotalDurationSeconds = calcStatistic.TotalDurationSeconds,
+            StartDateTime = calcStatistic.MinDate,
+            MinValue = calcStatistic.MinValue,
+            MaxValue = calcStatistic.MaxValue,
+            AverageExecutionTime = calcStatistic.AverageExecutionTime,
+            AverageValue = calcStatistic.AverageValue,
+            MedianValue = calcStatistic.MedianValue
+        };
+
+        if (needUpdateResult)
+            await _resultRepository.AddAndSaveAsync(result);
+        else
+        {
+            _resultRepository.Update(result);
+            await _resultRepository.SaveAsync();
+        }
+    }
+
+    private async Task<Value> SetToTable(string fileName, DateTime date, int executionTime,
+        double numericValue, int rowCount, List<Value> curFileRows, bool needUpdatevalue)
+    {
+        Value value = new();
+
+        if (needUpdatevalue)
+        {
+            value = new()
+            {
+                FileName = fileName,
+                Date = date,
+                ExecutionTime = executionTime,
+                NumericValue = numericValue
+            };
+
+            await _valueRepository.AddAsync(value);
+        }
+        else
+        {
+            value = curFileRows[rowCount];
+
+            value.Date = date;
+            value.ExecutionTime = executionTime;
+            value.NumericValue = numericValue;
+
+            _valueRepository.Update(value);
+        }
+
+        return value;
+    }
+
     private bool IsValidRow(CsvReader csv, out DateTime? dateTime, out int? execution, out double? numeric)
     {
         // Валидируем данные в каждой строке
-        DateTime? date = IsValid(csv, "Date", out dateTime, (DateTime dateTime) => dateTime >= new DateTime(2000, 1, 1) && dateTime <= DateTime.Now,
+        DateTime? date = IsValid(csv, "Date", out dateTime,
+            (DateTime dateTime) => dateTime >= new DateTime(2000, 1, 1) && dateTime <= DateTime.Now,
             StatusCode.InvalidDateFormat, StatusCode.InvalidDateRange);
 
         int? executionTime = IsValid(csv, "ExecutionTime", out execution, (int execution) => execution >= 0,
@@ -138,10 +182,5 @@ public class ValueService
         }
 
         return dateValue;
-    }
-
-    private Result GetResult()
-    {
-
     }
 }

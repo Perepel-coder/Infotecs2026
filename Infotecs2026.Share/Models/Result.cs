@@ -15,7 +15,7 @@ public class Result
 
     // Дельта времени Date в секундах
     [Column("total_duration_seconds")]
-    public double TotalDurationSeconds { get; set; }
+    public int TotalDurationSeconds { get; set; }
 
     // Минимальное дата и время
     [Column("start_date_time")]
@@ -40,13 +40,4 @@ public class Result
     // Минимальное значение
     [Column("min_value")]
     public double MinValue { get; set; }
-
-    [Column("processed_at")]
-    public DateTime ProcessedAt { get; set; } = DateTime.UtcNow;
-
-    [Column("rows_count")]
-    public int RowsCount { get; set; }
-
-    [Column("file_hash")]
-    public string? FileHash { get; set; }
 }
